@@ -1,0 +1,45 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.2.2"
+
+[workspace.dependencies]
+log = { version = "^0.4" }
+pretty_env_logger = "^0.5"
+thiserror = "^1.0"
+futures-test = "^0.3"
+futures = "^0.3"
+bitmask-enum = "^2.2"
+rand = { version = "^0.8", features = ["getrandom"] }
+boring = "^4.4.0"
+http = "^1.0"
+httparse = "^1.8"
+serde = { version = "^1.0", features = ["derive"] }
+serde_json = { version = "^1.0" }
+bytes = "^1.5"
+quiche = { version = "^0.22", features = ["boringssl-boring-crate"] }
+ring = "^0.17"
+cooked-waker = "^5.0"
+anyhow = "^1"
+syn = "=2.0.72"
+quickcheck = "1.0"
+paste = "1.0"
+resolv-conf = "^0.7"
+dns-parser = "^0.8"
+ipconfig = "0.3.2"
+# rasi
+rasi = { version = "^0.2" }
+rasi-spec = { version = "^0.2" }
+rasi-mio = { version = "^0.2" }
+ringbuf-rs = { version = "^0.2" }
+# futures
+futures-boring = { path = "crates/boring", version = "^0.2" }
+futures-map = { path = "crates/map", version = "^0.2" }
+futures-http = { path = "crates/http", version = "^0.2" }
+futures-jsonrpcv2 = { path = "crates/jsonrpc", version = "^0.2" }
+futures-quic = { path = "crates/quic", version = "^0.2" }
+futures-yamux = { path = "crates/mux", version = "^0.2" }
+futures-dns = { path = "crates/dns", version = "^0.2" }
