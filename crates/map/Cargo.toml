@@ -1,0 +1,19 @@
+[package]
+description = "Futures-based and hashmap-based alogrithms"
+documentation = "https://docs.rs/futures-map"
+edition.workspace = true
+license = "MIT"
+name = "futures-map"
+repository = "https://github.com/HalaOS/futures.git"
+version.workspace = true
+readme = "README.md"
+
+[dependencies]
+log = { workspace = true }
+futures = { workspace = true }
+cooked-waker = { workspace = true }
+
+[dev-dependencies]
+futures-test = { workspace = true }
+
+[features]
