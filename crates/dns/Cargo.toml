@@ -1,9 +1,9 @@
 [package]
 description = "A futures-based dns client implementation"
-documentation = "https://docs.rs/futures-dns"
+documentation = "https://docs.rs/futures-dnsv2"
 edition.workspace = true
 license = "MIT"
-name = "futures-dns"
+name = "futures-dnsv2"
 repository = "https://github.com/HalaOS/futures.git"
 version.workspace = true
 
