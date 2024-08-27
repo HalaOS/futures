@@ -36,7 +36,7 @@ pub(crate) struct RawDnsLookup {
 }
 
 /// A DNS client type without [`Drop`] support.
-/// you should manually call the [`close`](DnsLookupWithoutDrop::close) function to cleanup resources.
+/// you should manually call the [`close`](DnsLookupState::close) function to cleanup resources.
 ///
 /// Usually this type is used by background io tasks, the end-users should use [`DnsLookup`] instead.
 #[derive(Default, Clone)]
@@ -161,7 +161,7 @@ impl DnsLookup {
 }
 
 impl DnsLookup {
-    /// Get the innner [`DnsLookupWithoutDrop`] instance.
+    /// Get the innner [`DnsLookupState`] instance.
     pub fn to_inner(&self) -> DnsLookupState {
         self.0.clone()
     }
