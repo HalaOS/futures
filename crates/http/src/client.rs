@@ -115,10 +115,9 @@ pub mod rasio {
 
                 config.set_use_server_name_indication(self.use_server_name_indication);
 
-                let transport = connect(config, host, stream).await.map_err(|err| {
-                    println!("{}", err);
-                    Error::new(ErrorKind::ConnectionRefused, err)
-                })?;
+                let transport = connect(config, host, stream)
+                    .await
+                    .map_err(|err| Error::new(ErrorKind::ConnectionRefused, err))?;
 
                 return super::HttpSend::send(request, transport).await;
             }

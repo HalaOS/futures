@@ -869,7 +869,7 @@ impl AsyncWrite for QuicStream {
         let mut fut = if let Some(QuicStreamPoll::PollClose(fut)) = self.poll.take() {
             fut
         } else {
-            Box::pin(self.state.clone().send_owned(vec![], false))
+            Box::pin(self.state.clone().send_owned(vec![], true))
         };
 
         match fut.poll_unpin(cx) {
