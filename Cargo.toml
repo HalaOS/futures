@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "0.2.4"
+version = "0.2.5"
 
 [workspace.dependencies]
 log = { version = "^0.4" }
@@ -24,7 +24,7 @@ quiche = { version = "^0.22", features = ["boringssl-boring-crate"] }
 ring = "^0.17"
 cooked-waker = "^5.0"
 anyhow = "^1"
-syn = "=2.0.72"
+syn = "=2.0.77"
 quickcheck = "1.0"
 paste = "1.0"
 resolv-conf = "^0.7"

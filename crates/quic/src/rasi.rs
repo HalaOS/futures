@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use futures_map::FuturesWaitMap;
+use futures_map::FuturesUnorderedMap;
 use quiche::{Config, RecvInfo};
 use rand::{seq::IteratorRandom, thread_rng};
 use rasi::{
@@ -35,7 +35,7 @@ struct UdpGroup {
     /// Group sockets pool.
     sockets: Arc<HashMap<SocketAddr, Arc<UdpSocket>>>,
     /// A futures waiting map for [`UdpSocket::recv_from`]
-    recv_map: FuturesWaitMap<SocketAddr, Result<(Vec<u8>, SocketAddr)>>,
+    recv_map: FuturesUnorderedMap<SocketAddr, Result<(Vec<u8>, SocketAddr)>>,
     /// The recv buf size.
     max_recv_udp_payload_size: u16,
 }
@@ -56,7 +56,7 @@ impl UdpGroup {
 
         let mut sockets = HashMap::new();
 
-        let recv_map = FuturesWaitMap::new();
+        let recv_map = FuturesUnorderedMap::new();
 
         for laddr in laddrs {
             let socket = Arc::new(UdpSocket::bind_with([laddr].as_slice(), driver).await?);
