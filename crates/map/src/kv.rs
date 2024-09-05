@@ -26,7 +26,6 @@ pub struct KeyWaitMap<K, V> {
     inner: Mutex<RawMap<K, V>>,
 }
 
-
 impl<K, V> Default for KeyWaitMap<K, V> {
     fn default() -> Self {
         KeyWaitMap {
@@ -56,11 +55,17 @@ where
     pub fn insert(&self, k: K, v: V) -> Option<V> {
         let mut raw = self.inner.lock().unwrap();
 
-        if let Some(waker) = raw.wakers.remove(&k) {
+        let waker = raw.wakers.remove(&k);
+
+        let older = raw.kv.insert(k, Event::Value(v));
+
+        drop(raw);
+
+        if let Some(waker) = waker {
             waker.wake();
         }
 
-        if let Some(event) = raw.kv.insert(k, Event::Value(v)) {
+        if let Some(event) = older {
             match event {
                 Event::Value(value) => Some(value),
                 Event::Cancel => None,
@@ -80,15 +85,23 @@ where
     {
         let mut raw = self.inner.lock().unwrap();
 
+        let mut wakers = vec![];
+
         for (k, v) in kv.into_iter() {
             if let Some(waker) = raw.wakers.remove(&k) {
                 log::trace!("wakeup: {:?}", k);
-                waker.wake();
+                wakers.push(waker);
             } else {
                 log::trace!("wakeup: {:?}, without waiting task", k);
             }
 
             raw.kv.insert(k, Event::Value(v));
+        }
+
+        drop(raw);
+
+        for waker in wakers {
+            waker.wake();
         }
     }
 
@@ -120,6 +133,7 @@ where
 
         if let Some((k, waker)) = raw.wakers.remove_entry(k) {
             raw.kv.insert(k, Event::Cancel);
+            drop(raw);
             waker.wake();
             true
         } else {
@@ -134,8 +148,16 @@ where
 
         let wakers = raw.wakers.drain().collect::<Vec<_>>();
 
+        let mut droping = vec![];
+
         for (k, waker) in wakers {
             raw.kv.insert(k, Event::Cancel);
+            droping.push(waker);
+        }
+
+        drop(raw);
+
+        for waker in droping {
             waker.wake();
         }
     }

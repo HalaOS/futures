@@ -139,7 +139,11 @@ where
 
         inner.ready_queue.push_back(self.0.clone());
 
-        if let Some(waker) = inner.waker.take() {
+        let waker = inner.waker.take();
+
+        drop(inner);
+
+        if let Some(waker) = waker {
             waker.wake();
         }
     }
