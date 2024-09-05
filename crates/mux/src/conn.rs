@@ -447,10 +447,7 @@ struct RawStream(u32, YamuxConnState);
 
 impl Drop for RawStream {
     fn drop(&mut self) {
-        let stream_id = self.0;
-        let conn = self.1.clone();
-
-        _ = conn.stream_close(stream_id);
+        _ = self.1.stream_close(self.0);
     }
 }
 
