@@ -62,8 +62,11 @@ impl<K, R> FuturesUnorderedMap<K, R> {
 
         inner.ready_queue.push_back(k.clone());
         inner.futs.insert(k, Box::pin(fut));
+        let waker = inner.waker.take();
 
-        if let Some(waker) = inner.waker.take() {
+        drop(inner);
+
+        if let Some(waker) = waker {
             waker.wake();
         }
     }
