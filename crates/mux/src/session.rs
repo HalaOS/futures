@@ -417,10 +417,15 @@ impl Stream {
             return false;
         }
 
-        if self.flags.contains(Flags::RFIN)
-            || self.flags.contains(Flags::RRST)
-            || self.flags.contains(Flags::RST)
-        {
+        if self.send_buf.remaining() > 0 {
+            return false;
+        }
+
+        if self.flags.contains(Flags::RFIN) && self.flags.contains(Flags::FIN) {
+            return true;
+        }
+
+        if self.flags.contains(Flags::RRST) || self.flags.contains(Flags::RST) {
             return true;
         }
 
@@ -489,6 +494,19 @@ pub struct Session {
 }
 
 impl Session {
+    fn close_stream_collect(&mut self) {
+        let mut removed = vec![];
+
+        for (key, stream) in &self.streams {
+            if stream.is_finished() {
+                removed.push(key.clone());
+            }
+        }
+
+        for key in removed {
+            self.streams.remove(&key);
+        }
+    }
     fn recv_inner(&mut self, buf: &[u8]) -> Result<usize> {
         let (frame, read_size) = Frame::parse(buf)?;
 
@@ -506,6 +524,8 @@ impl Session {
             FrameType::Ping => self.recv_ping_frame(&frame)?,
             FrameType::GoAway => self.recv_go_away_frame(&frame)?,
         }
+
+        self.close_stream_collect();
 
         Ok(read_size)
     }
@@ -689,6 +709,35 @@ impl Session {
 
         Ok(12)
     }
+
+    fn send_inner(&mut self, buf: &mut [u8]) -> Result<usize> {
+        self.verify_session_status()?;
+
+        if buf.len() < 12 {
+            return Err(Error::BufferTooShort(12));
+        }
+
+        while let Some(send_frame) = self.send_frames.pop_front() {
+            log::trace!("send frame, type={:?}", send_frame);
+            match send_frame {
+                SendFrame::Ping(opaque) => return self.send_ping(buf, opaque),
+                SendFrame::Pong(opaque) => return self.send_pong(buf, opaque),
+                SendFrame::WindowUpdate(stream_id, flags) => {
+                    match self.send_window_size(buf, stream_id, flags) {
+                        Err(Error::Done) => continue,
+                        r => return r,
+                    }
+                }
+                SendFrame::Data(stream_id) => match self.send_data(buf, stream_id) {
+                    Err(Error::Done) => continue,
+                    r => return r,
+                },
+                SendFrame::GoAway(reason) => return self.send_go_away(buf, reason),
+            }
+        }
+
+        Err(Error::Done)
+    }
 }
 
 impl Session {
@@ -729,32 +778,11 @@ impl Session {
 
     /// Write new frame to be sent to peer into provided slice.
     pub fn send(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.verify_session_status()?;
+        let r = self.send_inner(buf);
 
-        if buf.len() < 12 {
-            return Err(Error::BufferTooShort(12));
-        }
+        self.close_stream_collect();
 
-        while let Some(send_frame) = self.send_frames.pop_front() {
-            log::trace!("send frame, type={:?}", send_frame);
-            match send_frame {
-                SendFrame::Ping(opaque) => return self.send_ping(buf, opaque),
-                SendFrame::Pong(opaque) => return self.send_pong(buf, opaque),
-                SendFrame::WindowUpdate(stream_id, flags) => {
-                    match self.send_window_size(buf, stream_id, flags) {
-                        Err(Error::Done) => continue,
-                        r => return r,
-                    }
-                }
-                SendFrame::Data(stream_id) => match self.send_data(buf, stream_id) {
-                    Err(Error::Done) => continue,
-                    r => return r,
-                },
-                SendFrame::GoAway(reason) => return self.send_go_away(buf, reason),
-            }
-        }
-
-        Err(Error::Done)
+        r
     }
 
     /// Writes data to a stream.
