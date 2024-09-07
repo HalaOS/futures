@@ -163,8 +163,6 @@ impl QuicConnState {
         self.collect_stream_events(state, &mut raised_events);
 
         self.event_map.batch_insert(raised_events);
-
-        self.handle_stream_drop(state).await;
     }
     /// inner call this method after success send one packet.
     async fn after_send(&self, state: &mut QuicRawConnState) {
@@ -173,8 +171,6 @@ impl QuicConnState {
         self.collect_stream_events(state, &mut raised_events);
 
         self.event_map.batch_insert(raised_events);
-
-        self.handle_stream_drop(state).await;
     }
 
     async fn send_ack_eliciting(&self, state: &mut QuicRawConnState) -> Result<bool> {
@@ -355,7 +351,7 @@ impl QuicConnState {
             let mut state = self.state.lock().await;
 
             if self.is_closed.load(Ordering::SeqCst) {
-                if !state.conn.is_closed() {
+                if !state.conn.is_closed() || !state.conn.is_draining() {
                     _ = state.conn.close(false, 0, b"");
                 }
             }
@@ -366,6 +362,8 @@ impl QuicConnState {
                 on_timout = false;
                 state.conn.on_timeout();
             }
+
+            self.handle_stream_drop(&mut state).await;
 
             match state.conn.send(buf) {
                 Ok((send_size, send_info)) => {
@@ -385,12 +383,12 @@ impl QuicConnState {
                         self.event_map.cancel_all();
                         return Err(Error::new(
                             ErrorKind::BrokenPipe,
-                            format!("connection is draining: {:?}", *state),
+                            format!("connection is closed: {:?}", *state),
                         ));
                     }
                     // No more data to send and conn is not established,
                     // indicate that the connection idle timeout expired.
-                    if !state.conn.is_established() && state.conn.is_timed_out() {
+                    if !state.conn.is_established() {
                         self.event_map.cancel_all();
 
                         log::trace!(
@@ -448,6 +446,8 @@ impl QuicConnState {
     /// On success the number of bytes processed from the input buffer is returned.
     pub async fn recv(&self, buf: &mut [u8], info: RecvInfo) -> Result<usize> {
         let mut state = self.state.lock().await;
+
+        self.handle_stream_drop(&mut state).await;
 
         match state.conn.recv(buf, info) {
             Ok(read_size) => {
@@ -579,6 +579,11 @@ impl QuicConnState {
             .insert(QuicConnStateEvent::StreamAccept(self.id.clone()), ());
 
         Ok(())
+    }
+
+    /// Returns if this connection is closed.
+    pub fn is_closed(&self) -> bool {
+        self.is_closed.load(Ordering::SeqCst)
     }
 }
 
