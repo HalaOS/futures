@@ -119,6 +119,8 @@ impl YamuxConnState {
                 }
             }
 
+            _ = self.handle_stream_drop(&mut session).await;
+
             match session.send(buf) {
                 Ok(send_size) => {
                     self.notify_stream_events(&session);
@@ -126,11 +128,6 @@ impl YamuxConnState {
                     return Ok(send_size);
                 }
                 Err(Error::Done) => {
-                    if self.handle_stream_drop(&mut session).await {
-                        drop(session);
-                        continue;
-                    }
-
                     log::trace!("send data. waiting");
 
                     self.event_map.wait(&ConnEvent::Send, session).await;
@@ -145,6 +142,9 @@ impl YamuxConnState {
     /// Write new data received from peer.
     pub async fn recv(&self, buf: &[u8]) -> crate::errors::Result<usize> {
         let mut session = self.session.lock().await;
+
+        _ = self.handle_stream_drop(&mut session).await;
+
         match session.recv(buf) {
             Ok(send_size) => {
                 self.notify_stream_events(&session);
