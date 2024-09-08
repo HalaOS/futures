@@ -4,7 +4,6 @@ use std::{
     io::{Error, ErrorKind, Result},
     net::{SocketAddr, ToSocketAddrs},
     sync::Arc,
-    time::Duration,
 };
 
 use futures_map::FuturesUnorderedMap;
@@ -359,14 +358,14 @@ pub trait QuicConnect {
 impl QuicConnect for QuicConn {}
 
 async fn client_send_loop(udp_socket: UdpSocket, conn: QuicConnState) {
-    if let Err(err) = client_send_loop_priv(udp_socket, &conn).await {
+    if let Err(err) = client_send_loop_priv(&udp_socket, &conn).await {
         log::error!(target: "QuicConn","stop recv loop by error: {}",err);
     }
-
+    _ = udp_socket.shutdown(std::net::Shutdown::Both);
     _ = conn.close();
 }
 
-async fn client_send_loop_priv(udp_socket: UdpSocket, conn: &QuicConnState) -> Result<()> {
+async fn client_send_loop_priv(udp_socket: &UdpSocket, conn: &QuicConnState) -> Result<()> {
     let mut buf = vec![0; MAX_MTU_SIZE];
     loop {
         let (send_size, send_info) = conn.send(&mut buf).await?;
@@ -382,32 +381,18 @@ async fn client_send_loop_priv(udp_socket: UdpSocket, conn: &QuicConnState) -> R
     }
 }
 async fn client_recv_loop(udp_socket: UdpSocket, conn: QuicConnState) {
-    if let Err(err) = client_recv_loop_prev(udp_socket, &conn).await {
+    if let Err(err) = client_recv_loop_prev(&udp_socket, &conn).await {
         log::error!(target: "QuicConn","stop recv loop by error: {}",err);
     }
 
     _ = conn.close();
 }
 
-async fn client_recv_loop_prev(udp_socket: UdpSocket, conn: &QuicConnState) -> Result<()> {
+async fn client_recv_loop_prev(udp_socket: &UdpSocket, conn: &QuicConnState) -> Result<()> {
     let laddr = udp_socket.local_addr()?;
     let mut buf = vec![0; MAX_MTU_SIZE];
     loop {
-        let (read_size, raddr) = match udp_socket
-            .recv_from(&mut buf)
-            .timeout(Duration::from_millis(200))
-            .await
-        {
-            Some(Ok(r)) => r,
-            Some(Err(err)) => return Err(err),
-            None => {
-                if conn.is_quiche_conn_closed().await {
-                    return Ok(());
-                }
-
-                continue;
-            }
-        };
+        let (read_size, raddr) = udp_socket.recv_from(&mut buf).await?;
 
         log::trace!(
             "client_recv: tx len={}, from={}, to={}",

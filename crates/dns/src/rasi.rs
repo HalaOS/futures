@@ -1,6 +1,6 @@
-use std::{net::SocketAddr, time::Duration};
+use std::net::SocketAddr;
 
-use rasi::{net::UdpSocket, task::spawn_ok, timer::TimeoutExt};
+use rasi::{net::UdpSocket, task::spawn_ok};
 
 use crate::{
     client::{DnsLookup, DnsLookupState},
@@ -81,6 +81,7 @@ impl DnsLookup {
             }
 
             lookup_cloned.close();
+            _ = socket_cloned.shutdown(std::net::Shutdown::Both);
         });
 
         spawn_ok(async move {
@@ -120,21 +121,7 @@ impl DnsLookup {
         log::trace!("DnsLookup, udp listener on {}", socket.local_addr()?);
 
         loop {
-            let (read_size, from) = match socket
-                .recv_from(&mut buf)
-                .timeout(Duration::from_millis(200))
-                .await
-            {
-                Some(Ok(r)) => r,
-                Some(Err(err)) => return Err(err.into()),
-                None => {
-                    if lookup.is_closed() {
-                        return Ok(());
-                    }
-
-                    continue;
-                }
-            };
+            let (read_size, from) = socket.recv_from(&mut buf).await?;
 
             if from != server {
                 log::warn!("DnsLookup, recv packet from unknown peer={}", from);
