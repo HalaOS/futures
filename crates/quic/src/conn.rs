@@ -569,6 +569,11 @@ impl QuicConnState {
         &self.id
     }
 
+    /// Returns true if the inner quiche connection is closed.
+    pub async fn is_quiche_conn_closed(&self) -> bool {
+        self.state.lock().await.conn.is_closed()
+    }
+
     /// Close this connection.
     pub fn close(&self) -> Result<()> {
         self.is_closed.store(true, Ordering::SeqCst);
@@ -581,7 +586,7 @@ impl QuicConnState {
         Ok(())
     }
 
-    /// Returns if this connection is closed.
+    /// Returns if this connection is closed by [`Self::close`] function
     pub fn is_closed(&self) -> bool {
         self.is_closed.load(Ordering::SeqCst)
     }
