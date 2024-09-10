@@ -832,7 +832,7 @@ impl Session {
                     .push_back(SendFrame::WindowUpdate(stream_id, Flags::none()));
             }
 
-            Ok((read_size, stream.is_finished()))
+            Ok((read_size, stream.flags.contains(Flags::RFIN)))
         } else {
             Err(Error::InvalidStreamState(stream_id))
         }
@@ -1172,6 +1172,10 @@ mod tests {
         assert_eq!(client.stream_recv(stream_id, &mut buf).unwrap(), (11, true));
 
         assert_eq!(&buf[..11], b"hello world");
+
+        assert!(!client.stream_finished(stream_id));
+
+        client.stream_send(stream_id, b"", true).unwrap();
 
         assert!(client.stream_finished(stream_id));
     }

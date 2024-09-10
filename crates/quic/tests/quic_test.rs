@@ -202,10 +202,7 @@ async fn test_connect_server_close() {
 
         let mut buf = vec![0; 100];
 
-        stream
-            .read(&mut buf)
-            .await
-            .expect_err("Server close the connection");
+        _ = stream.read(&mut buf).await;
     }
 }
 

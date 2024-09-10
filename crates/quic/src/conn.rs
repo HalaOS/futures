@@ -388,7 +388,7 @@ impl QuicConnState {
                     }
                     // No more data to send and conn is not established,
                     // indicate that the connection idle timeout expired.
-                    if !state.conn.is_established() {
+                    if !state.conn.is_established() && state.conn.is_timed_out() {
                         self.event_map.cancel_all();
 
                         log::trace!(

@@ -596,7 +596,7 @@ mod tests {
             register_mio_network();
             register_mio_timer();
 
-            pretty_env_logger::init_timed();
+            // pretty_env_logger::init_timed();
         });
     }
 
