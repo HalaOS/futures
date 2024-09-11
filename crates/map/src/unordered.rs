@@ -3,7 +3,10 @@ use std::{
     fmt::Debug,
     future::Future,
     hash::Hash,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
     task::{Context, Poll, Waker},
 };
 
@@ -28,12 +31,14 @@ impl<K, R> Default for RawFutureWaitMap<K, R> {
 
 /// A waitable map for futures.
 pub struct FuturesUnorderedMap<K, R> {
+    len: Arc<AtomicUsize>,
     inner: Arc<Mutex<RawFutureWaitMap<K, R>>>,
 }
 
 impl<K, R> Clone for FuturesUnorderedMap<K, R> {
     fn clone(&self) -> Self {
         Self {
+            len: self.len.clone(),
             inner: self.inner.clone(),
         }
     }
@@ -49,6 +54,7 @@ impl<K, R> FuturesUnorderedMap<K, R> {
     /// Create a new future `WaitMap` instance.
     pub fn new() -> Self {
         Self {
+            len: Default::default(),
             inner: Default::default(),
         }
     }
@@ -65,6 +71,8 @@ impl<K, R> FuturesUnorderedMap<K, R> {
         let waker = inner.waker.take();
 
         drop(inner);
+
+        self.len.fetch_add(1, Ordering::Relaxed);
 
         if let Some(waker) = waker {
             waker.wake();
@@ -94,6 +102,7 @@ impl<K, R> FuturesUnorderedMap<K, R> {
 
             match fut.poll_unpin(&mut proxy_context) {
                 Poll::Ready(r) => {
+                    self.len.fetch_sub(1, Ordering::Relaxed);
                     return Poll::Ready((key, r));
                 }
                 _ => {
@@ -104,6 +113,16 @@ impl<K, R> FuturesUnorderedMap<K, R> {
         }
 
         Poll::Pending
+    }
+
+    /// Returns the map's length.
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
+    }
+
+    /// Returns true if this map is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
