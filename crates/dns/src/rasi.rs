@@ -2,134 +2,219 @@ use std::net::SocketAddr;
 
 use rasi::{net::UdpSocket, task::spawn_ok};
 
-use crate::{
-    client::{DnsLookup, DnsLookupState},
-    Result,
-};
+use crate::Result;
 
-#[cfg(all(unix, feature = "sysconf"))]
-mod sys {
-    use std::net::{IpAddr, SocketAddr};
+#[cfg(feature = "nslookup")]
+mod nslookup {
 
-    use crate::{Error, Result};
+    use super::*;
 
-    /// Get the system-wide DNS name server configuration.
-    pub fn name_server() -> Result<SocketAddr> {
-        let config = std::fs::read("/etc/resolv.conf")?;
+    use crate::nslookup::{DnsLookup, DnsLookupState};
 
-        let config = resolv_conf::Config::parse(&config)?;
+    impl DnsLookup {
+        /// Create a DNS lookup with sys-wide DNS name server configuration.
+        #[cfg(feature = "sysconf")]
+        pub async fn over_udp() -> Result<Self> {
+            use crate::sysconf;
 
-        for name_server in config.nameservers {
-            let ip_addr: IpAddr = name_server.into();
-
-            return Ok((ip_addr, 53).into());
+            Self::with_udp_server(sysconf::name_server()?).await
         }
 
-        return Err(Error::SysWideNameServer.into());
+        /// Create a DNS lookup over udp socket.
+        pub async fn with_udp_server(nameserver: SocketAddr) -> Result<Self> {
+            let socket = UdpSocket::bind(if nameserver.is_ipv4() {
+                "0.0.0.0:0".parse::<SocketAddr>()?
+            } else {
+                "[::]:0".parse::<SocketAddr>()?
+            })
+            .await?;
+
+            let this = Self::default();
+
+            let lookup = this.to_inner();
+
+            let lookup_cloned = lookup.clone();
+            let socket_cloned = socket.clone();
+            let server_cloned = nameserver.clone();
+
+            spawn_ok(async move {
+                if let Err(err) =
+                    Self::udp_send_loop(&lookup_cloned, &socket_cloned, server_cloned).await
+                {
+                    log::error!("DnsLookup, stop send loop with error: {}", err);
+                } else {
+                    log::trace!("DnsLookup, stop send loop.",);
+                }
+
+                lookup_cloned.close();
+                _ = socket_cloned.shutdown(std::net::Shutdown::Both);
+            });
+
+            spawn_ok(async move {
+                if let Err(err) = Self::udp_recv_loop(&lookup, &socket, nameserver).await {
+                    log::error!("DnsLookup, stop recv loop with error: {}", err);
+                } else {
+                    log::trace!("DnsLookup, stop recv loop.",);
+                }
+
+                lookup.close();
+            });
+
+            Ok(this)
+        }
+
+        async fn udp_send_loop(
+            lookup: &DnsLookupState,
+            socket: &UdpSocket,
+            server: SocketAddr,
+        ) -> Result<()> {
+            loop {
+                let buf = lookup.send().await?;
+
+                let send_size = socket.send_to(buf, server).await?;
+
+                log::trace!("DnsLookup, send len={} raddr={}", send_size, server);
+            }
+        }
+
+        async fn udp_recv_loop(
+            lookup: &DnsLookupState,
+            socket: &UdpSocket,
+            server: SocketAddr,
+        ) -> Result<()> {
+            let mut buf = vec![0; 1024 * 1024];
+
+            log::trace!("DnsLookup, udp listener on {}", socket.local_addr()?);
+
+            loop {
+                let (read_size, from) = socket.recv_from(&mut buf).await?;
+
+                if from != server {
+                    log::warn!("DnsLookup, recv packet from unknown peer={}", from);
+                } else {
+                    log::trace!("DnsLookup, recv response len={}", read_size);
+                }
+
+                lookup.recv(&buf[..read_size]).await?;
+            }
+        }
     }
 }
 
-#[cfg(all(windows, feature = "sysconf"))]
-mod sys {
-    use std::net::SocketAddr;
+#[cfg(feature = "mdns")]
+mod mdns {
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        time::Duration,
+    };
 
-    use crate::{Error, Result};
+    use rasi::{net::UdpSocket, task::spawn_ok, timer::TimeoutExt};
+    use socket2::{Domain, Protocol, Type};
 
-    /// Get the system-wide DNS name server configuration.
-    pub fn name_server() -> Result<SocketAddr> {
-        for adapter in ipconfig::get_adapters()? {
-            for ip_addr in adapter.dns_servers() {
-                return Ok((ip_addr.clone(), 53).into());
-            }
-        }
+    use crate::{
+        mdns::{
+            MdnsDiscover, MdnsDiscoverState, MULTICAST_ADDR_IPV4, MULTICAST_ADDR_IPV6,
+            MULTICAST_PORT,
+        },
+        Result,
+    };
 
-        return Err(Error::SysWideNameServer.into());
-    }
-}
+    impl MdnsDiscover {
+        /// listen service response on all interfaces.
+        pub async fn all<S>(service_name: S, intervals: Duration) -> Result<Self>
+        where
+            S: AsRef<str>,
+        {
+            let socket = socket2::Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
-impl DnsLookup {
-    /// Create a DNS lookup with sys-wide DNS name server configuration.
-    #[cfg(feature = "sysconf")]
-    pub async fn over_udp() -> Result<Self> {
-        Self::with_udp_server(sys::name_server()?).await
-    }
+            socket.set_reuse_address(true)?;
 
-    /// Create a DNS lookup over udp socket.
-    pub async fn with_udp_server(nameserver: SocketAddr) -> Result<Self> {
-        let socket = UdpSocket::bind(if nameserver.is_ipv4() {
-            "0.0.0.0:0".parse::<SocketAddr>()?
-        } else {
-            "[::]:0".parse::<SocketAddr>()?
-        })
-        .await?;
+            #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
+            socket.set_reuse_port(true)?;
 
-        let this = Self::default();
+            let socketaddr: SocketAddr = (Ipv4Addr::UNSPECIFIED, MULTICAST_PORT).into();
 
-        let lookup = this.to_inner();
+            socket.bind(&socketaddr.into())?;
 
-        let lookup_cloned = lookup.clone();
-        let socket_cloned = socket.clone();
-        let server_cloned = nameserver.clone();
+            #[cfg(unix)]
+            let socket = {
+                use std::os::fd::IntoRawFd;
 
-        spawn_ok(async move {
-            if let Err(err) =
-                Self::udp_send_loop(&lookup_cloned, &socket_cloned, server_cloned).await
-            {
-                log::error!("DnsLookup, stop send loop with error: {}", err);
-            } else {
-                log::trace!("DnsLookup, stop send loop.",);
-            }
+                unsafe { UdpSocket::from_raw_fd(socket.into_raw_fd())? }
+            };
 
-            lookup_cloned.close();
-            _ = socket_cloned.shutdown(std::net::Shutdown::Both);
-        });
+            #[cfg(windows)]
+            let socket = {
+                use std::os::windows::io::IntoRawSocket;
 
-        spawn_ok(async move {
-            if let Err(err) = Self::udp_recv_loop(&lookup, &socket, nameserver).await {
-                log::error!("DnsLookup, stop recv loop with error: {}", err);
-            } else {
-                log::trace!("DnsLookup, stop recv loop.",);
-            }
+                unsafe { UdpSocket::from_raw_socket(socket.into_raw_socket())? }
+            };
 
-            lookup.close();
-        });
+            socket.set_multicast_loop_v4(true)?;
+            socket.join_multicast_v4(&MULTICAST_ADDR_IPV4, &Ipv4Addr::UNSPECIFIED)?;
 
-        Ok(this)
-    }
+            let this = Self::new(service_name, intervals)?;
 
-    async fn udp_send_loop(
-        lookup: &DnsLookupState,
-        socket: &UdpSocket,
-        server: SocketAddr,
-    ) -> Result<()> {
-        loop {
-            let buf = lookup.send().await?;
+            spawn_ok(this.to_state().recv_loop(socket.clone()));
+            spawn_ok(this.to_state().send_loop(socket));
 
-            let send_size = socket.send_to(buf, server).await?;
-
-            log::trace!("DnsLookup, send len={} raddr={}", send_size, server);
+            Ok(this)
         }
     }
 
-    async fn udp_recv_loop(
-        lookup: &DnsLookupState,
-        socket: &UdpSocket,
-        server: SocketAddr,
-    ) -> Result<()> {
-        let mut buf = vec![0; 1024 * 1024];
-
-        log::trace!("DnsLookup, udp listener on {}", socket.local_addr()?);
-
-        loop {
-            let (read_size, from) = socket.recv_from(&mut buf).await?;
-
-            if from != server {
-                log::warn!("DnsLookup, recv packet from unknown peer={}", from);
-            } else {
-                log::trace!("DnsLookup, recv response len={}", read_size);
+    impl MdnsDiscoverState {
+        async fn recv_loop(self, socket: UdpSocket) {
+            if let Err(err) = self.recv_loop_prv(&socket).await {
+                log::error!("mdns_discover 'recv_loop' stopped with error: {}", err);
             }
 
-            lookup.recv(&buf[..read_size]).await?;
+            self.close();
+            _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+
+        async fn recv_loop_prv(&self, socket: &UdpSocket) -> Result<()> {
+            let mut buf = vec![0; 9000];
+            loop {
+                let (recv_len, from) = socket.recv_from(&mut buf).await?;
+
+                log::trace!("mdns recv from {}", from);
+
+                self.recv(&buf[..recv_len], from).await?;
+            }
+        }
+
+        async fn send_loop(self, socket: UdpSocket) {
+            if let Err(err) = self.send_loop_prv(&socket).await {
+                log::error!("mdns_discover 'send_loop' stopped with error: {}", err);
+            }
+
+            self.close();
+            _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+
+        async fn send_loop_prv(&self, socket: &UdpSocket) -> Result<()> {
+            let laddr = socket.local_addr()?;
+
+            let raddr: IpAddr = if laddr.is_ipv4() {
+                MULTICAST_ADDR_IPV4.into()
+            } else {
+                MULTICAST_ADDR_IPV6.into()
+            };
+
+            loop {
+                match self.send().await? {
+                    crate::mdns::MdnsDiscoverSend::Buf(buf) => {
+                        socket.send_to(buf, (raddr, MULTICAST_PORT)).await?;
+                    }
+                    crate::mdns::MdnsDiscoverSend::Sleep(duration) => {
+                        // closed
+                        if let Some(_) = self.is_closed().timeout(duration).await {
+                            log::trace!("");
+                            return Ok(());
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -144,7 +229,7 @@ mod tests {
     use rasi::timer::sleep;
     use rasi_mio::{net::register_mio_network, timer::register_mio_timer};
 
-    use crate::client::DnsLookup;
+    use crate::nslookup::DnsLookup;
 
     fn init() {
         static INIT: Once = Once::new();
@@ -157,6 +242,7 @@ mod tests {
         });
     }
 
+    #[cfg(all(feature = "nslookup", feature = "rasi", feature = "sysconf"))]
     #[futures_test::test]
     async fn test_udp_lookup() {
         init();
@@ -176,6 +262,7 @@ mod tests {
         assert_eq!(Arc::strong_count(&inner.0), 1);
     }
 
+    #[cfg(all(feature = "nslookup", feature = "rasi", feature = "sysconf"))]
     #[futures_test::test]
     async fn test_udp_lookup_txt() {
         init();
@@ -196,5 +283,24 @@ mod tests {
         sleep(Duration::from_secs(1)).await;
 
         assert_eq!(Arc::strong_count(&inner.0), 1);
+    }
+
+    #[cfg(all(feature = "mdns", feature = "rasi"))]
+    #[futures_test::test]
+    async fn test_mdns() {
+        use futures::TryStreamExt;
+
+        use crate::mdns::MdnsDiscover;
+
+        init();
+
+        let mut incoming = MdnsDiscover::all("_p2p._udp.local", Duration::from_secs(4))
+            .await
+            .unwrap()
+            .into_incoming();
+
+        while let Some((_, from)) = incoming.try_next().await.unwrap() {
+            log::trace!("_p2p._udp.local from {:?}", from);
+        }
     }
 }

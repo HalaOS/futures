@@ -1,6 +1,6 @@
 use std::{str::Utf8Error, string::FromUtf8Error};
 
-use dns_parser::ResponseCode;
+use hickory_proto::op::{MessageType, ResponseCode};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -31,10 +31,13 @@ pub enum Error {
     Utf8Error(#[from] Utf8Error),
 
     #[error(transparent)]
-    DnsParse(#[from] dns_parser::Error),
+    ProtoError(#[from] hickory_proto::error::ProtoError),
 
     #[error("DNS server report, err={0}")]
     ServerError(ResponseCode),
+
+    #[error("Invalid dns packet type: {0}")]
+    InvalidType(MessageType),
 
     #[cfg(all(unix, feature = "sysconf"))]
     #[error(transparent)]

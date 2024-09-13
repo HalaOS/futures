@@ -10,9 +10,12 @@ use std::{
     },
 };
 
-use dns_parser::{Builder, Packet, QueryClass, QueryType, ResponseCode};
 use futures::lock::Mutex;
 use futures_map::KeyWaitMap;
+use hickory_proto::{
+    op::{Message, MessageType, Query, ResponseCode},
+    rr::{Name, RData, RecordType},
+};
 
 use crate::errors::{Error, Result};
 
@@ -112,47 +115,46 @@ impl Drop for DnsLookup {
 }
 
 impl DnsLookup {
-    fn parse_ip_addrs<'a>(message: &Packet<'a>) -> Result<Vec<IpAddr>> {
+    fn parse_ip_addrs<'a>(message: &Message) -> Result<Vec<IpAddr>> {
         let mut group = vec![];
 
-        for answer in &message.answers {
-            // Determine the IP address.
-            match answer.data {
-                dns_parser::RData::A(a) => {
-                    let ipaddr: IpAddr = a.0.into();
-                    log::trace!("{} has addr {}", answer.name, ipaddr);
-                    group.push(ipaddr);
+        for answer in message.answers() {
+            if let Some(data) = answer.data() {
+                match data {
+                    RData::A(a) => {
+                        log::trace!("{} has addr {}", answer.name(), a.0);
+                        group.push(a.0.clone().into());
+                    }
+                    RData::AAAA(aaa) => {
+                        log::trace!("{} has addr {}", answer.name(), aaa.0);
+                        group.push(aaa.0.clone().into());
+                    }
+                    _ => {}
                 }
-                dns_parser::RData::AAAA(aaaa) => {
-                    let ipaddr: IpAddr = aaaa.0.into();
-                    log::trace!("{} has addr {}", answer.name, ipaddr);
-                    group.push(ipaddr);
-                }
-
-                _ => {}
             }
         }
 
         Ok(group)
     }
 
-    fn parse_txt<'a, 'b>(message: &Packet<'a>) -> Result<Vec<String>> {
+    fn parse_txt<'a, 'b>(message: &Message) -> Result<Vec<String>> {
         let mut group = vec![];
 
-        for answer in &message.answers {
-            // Determine the IP address.
-            match answer.data {
-                dns_parser::RData::TXT(ref txt) => {
-                    let txt = txt
-                        .iter()
-                        .map(|x| from_utf8(x).map_err(|err| err.into()))
-                        .collect::<Result<Vec<_>>>()?
-                        .concat();
-                    log::trace!("{} has txt {}", answer.name, txt);
-                    group.push(txt);
-                }
+        for answer in message.answers() {
+            if let Some(data) = answer.data() {
+                match data {
+                    RData::TXT(txt) => {
+                        let txt = txt
+                            .iter()
+                            .map(|x| from_utf8(x).map_err(|err| err.into()))
+                            .collect::<Result<Vec<_>>>()?
+                            .concat();
+                        log::trace!("{} has txt {}", answer.name(), txt);
+                        group.push(txt);
+                    }
 
-                _ => {}
+                    _ => {}
+                }
             }
         }
 
@@ -170,7 +172,7 @@ impl DnsLookup {
     where
         N: AsRef<str>,
     {
-        self.call_with(label.as_ref(), &[QueryType::AAAA], Self::parse_ip_addrs)
+        self.call_with(label.as_ref(), &[RecordType::AAAA], Self::parse_ip_addrs)
             .await
             .map(|addrs| {
                 addrs
@@ -188,7 +190,7 @@ impl DnsLookup {
     where
         N: AsRef<str>,
     {
-        self.call_with(label.as_ref(), &[QueryType::A], Self::parse_ip_addrs)
+        self.call_with(label.as_ref(), &[RecordType::A], Self::parse_ip_addrs)
             .await
             .map(|addrs| {
                 addrs
@@ -206,11 +208,11 @@ impl DnsLookup {
         N: AsRef<str>,
     {
         let mut addrs_v6 = self
-            .call_with(label.as_ref(), &[QueryType::AAAA], Self::parse_ip_addrs)
+            .call_with(label.as_ref(), &[RecordType::AAAA], Self::parse_ip_addrs)
             .await?;
 
         let mut addrs_v4 = self
-            .call_with(label.as_ref(), &[QueryType::A], Self::parse_ip_addrs)
+            .call_with(label.as_ref(), &[RecordType::A], Self::parse_ip_addrs)
             .await?;
 
         addrs_v6.append(&mut addrs_v4);
@@ -223,26 +225,30 @@ impl DnsLookup {
     where
         N: AsRef<str>,
     {
-        self.call_with(label.as_ref(), &[QueryType::TXT], Self::parse_txt)
+        self.call_with(label.as_ref(), &[RecordType::TXT], Self::parse_txt)
             .await
     }
 
-    pub async fn call_with<F, R, E>(&self, qname: &str, qtypes: &[QueryType], resp: F) -> Result<R>
+    pub async fn call_with<F, R, E>(&self, qname: &str, qtypes: &[RecordType], resp: F) -> Result<R>
     where
-        for<'a> F: FnOnce(&Packet<'a>) -> std::result::Result<R, E>,
+        F: FnOnce(&Message) -> std::result::Result<R, E>,
         R: 'static,
         Error: From<E>,
     {
         let id = self.0 .0.idgen.fetch_add(1, Ordering::SeqCst);
 
-        let mut builder = Builder::new_query(id, true);
+        let mut message = Message::new();
+
+        message.set_id(id).set_recursion_desired(true);
 
         for qtype in qtypes {
             log::trace!("{} add question {:?}", qname, qtype);
-            builder.add_question(qname, false, qtype.clone(), QueryClass::IN);
+            message.add_query(Query::query(Name::from_ascii(qname)?, qtype.clone()));
         }
 
-        let buf = builder.build().map_err(|_| Error::Truncated)?;
+        log::trace!("\n{}", message);
+
+        let buf = message.to_vec()?;
 
         self.0 .0.sending.lock().await.push_back(buf);
 
@@ -254,10 +260,14 @@ impl DnsLookup {
         if let Some(LookupEventArg::Response(buf)) =
             self.0 .0.waiters.wait(&LookupEvent::Response(id), ()).await
         {
-            let message = Packet::parse(buf.as_slice())?;
+            let message = Message::from_vec(&buf)?;
 
-            if ResponseCode::NoError != message.header.response_code {
-                return Err(Error::ServerError(message.header.response_code));
+            if message.message_type() != MessageType::Response {
+                return Err(Error::InvalidType(message.message_type()));
+            }
+
+            if ResponseCode::NoError != message.response_code() {
+                return Err(Error::ServerError(message.response_code()));
             }
 
             Ok(resp(&message)?)
