@@ -145,8 +145,8 @@ impl DnsLookup {
                 dns_parser::RData::TXT(ref txt) => {
                     let txt = txt
                         .iter()
-                        .map(|x| from_utf8(x).unwrap())
-                        .collect::<Vec<_>>()
+                        .map(|x| from_utf8(x).map_err(|err| err.into()))
+                        .collect::<Result<Vec<_>>>()?
                         .concat();
                     log::trace!("{} has txt {}", answer.name, txt);
                     group.push(txt);

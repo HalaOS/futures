@@ -1,4 +1,4 @@
-use std::string::FromUtf8Error;
+use std::{str::Utf8Error, string::FromUtf8Error};
 
 use dns_parser::ResponseCode;
 
@@ -26,6 +26,9 @@ pub enum Error {
 
     #[error(transparent)]
     FromUtf8Error(#[from] FromUtf8Error),
+
+    #[error(transparent)]
+    Utf8Error(#[from] Utf8Error),
 
     #[error(transparent)]
     DnsParse(#[from] dns_parser::Error),

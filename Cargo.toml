@@ -30,6 +30,7 @@ paste = "1.0"
 resolv-conf = "^0.7"
 dns-parser = "^0.8"
 ipconfig = "0.3.2"
+hickory-proto = "^0.24.1"
 # rasi
 rasi = { version = "^0.2" }
 rasi-spec = { version = "^0.2" }
