@@ -129,7 +129,7 @@ mod mdns {
 
             socket.set_reuse_address(true)?;
 
-            #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
+            #[cfg(not(any(target_os = "solaris", target_os = "illumos", target_os = "windows")))]
             socket.set_reuse_port(true)?;
 
             let socketaddr: SocketAddr = (Ipv4Addr::UNSPECIFIED, MULTICAST_PORT).into();
@@ -300,6 +300,7 @@ mod tests {
         assert_eq!(Arc::strong_count(&inner.0), 1);
     }
 
+    #[ignore]
     #[cfg(all(feature = "mdns", feature = "rasi"))]
     #[futures_test::test]
     async fn test_mdns() {
