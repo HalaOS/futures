@@ -89,10 +89,6 @@ impl YamuxConnState {
         if let Some(drain) = self.stream_drop_table.drain() {
             let drop_streams = drain.len();
             for stream_id in drain {
-                if let Err(err) = state.stream_send(stream_id, b"", true) {
-                    log::error!("drop stream failed, stream_id={}, error={}", stream_id, err);
-                }
-
                 if !state.stream_finished(stream_id) {
                     if let Err(err) = state.stream_reset(stream_id) {
                         log::error!("drop stream failed, stream_id={}, error={}", stream_id, err);

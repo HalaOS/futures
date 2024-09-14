@@ -413,11 +413,11 @@ impl Stream {
     ///
     /// Basically this returns true when the peer either set the fin flag for the stream, or sent RST_FRAME.
     fn is_finished(&self) -> bool {
-        if self.recv_buf.remaining() > 0 {
+        if !self.flags.contains(Flags::RST) && self.recv_buf.remaining() > 0 {
             return false;
         }
 
-        if self.send_buf.remaining() > 0 {
+        if !self.flags.contains(Flags::RRST) && self.send_buf.remaining() > 0 {
             return false;
         }
 
@@ -504,6 +504,7 @@ impl Session {
         }
 
         for key in removed {
+            log::trace!("stream id={}, removed", key);
             self.streams.remove(&key);
         }
     }
@@ -513,8 +514,9 @@ impl Session {
         let frame_type = frame.header.frame_type()?;
 
         log::trace!(
-            "recv frame, type={:?}, len={}",
+            "recv frame, type={:?}, stream={}, len={}",
             frame_type,
+            frame.header.stream_id(),
             frame.header.length()
         );
 
@@ -553,11 +555,13 @@ impl Session {
                 self.streams.insert(stream_id, stream);
                 self.incoming_stream_ids.push_back(stream_id);
             } else {
-                // terminate the session.
-                self.send_frames
-                    .push_back(SendFrame::GoAway(Reason::ProtocolError));
-                // terminate recv loop
-                return Err(Error::InvalidState);
+                if !flags.contains(Flags::RST) {
+                    // terminate the session.
+                    self.send_frames
+                        .push_back(SendFrame::GoAway(Reason::ProtocolError));
+                    // terminate recv loop
+                    return Err(Error::InvalidState);
+                }
             }
         }
 
@@ -586,11 +590,13 @@ impl Session {
                 self.streams.insert(stream_id, stream);
                 self.incoming_stream_ids.push_back(stream_id);
             } else {
-                // terminate the session.
-                self.send_frames
-                    .push_back(SendFrame::GoAway(Reason::ProtocolError));
-                // terminate recv loop
-                return Err(Error::InvalidState);
+                if !flags.contains(Flags::RST) {
+                    // terminate the session.
+                    self.send_frames
+                        .push_back(SendFrame::GoAway(Reason::ProtocolError));
+                    // terminate recv loop
+                    return Err(Error::InvalidState);
+                }
             }
         }
 
