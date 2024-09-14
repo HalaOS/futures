@@ -1,7 +1,8 @@
-use std::{str::Utf8Error, string::FromUtf8Error};
+use std::str::Utf8Error;
 
 use hickory_proto::op::{MessageType, ResponseCode};
 
+/// Error variant returns by functions of this crate.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     // #[error(transparent)]
@@ -23,9 +24,6 @@ pub enum Error {
 
     #[error(transparent)]
     AddrParseError(#[from] std::net::AddrParseError),
-
-    #[error(transparent)]
-    FromUtf8Error(#[from] FromUtf8Error),
 
     #[error(transparent)]
     Utf8Error(#[from] Utf8Error),
@@ -51,7 +49,7 @@ pub enum Error {
     IpConfigError(#[from] ipconfig::error::Error),
 }
 
-/// Result type returns by APIs in this crate.
+/// Result type returns by function of this crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<Error> for std::io::Error {
