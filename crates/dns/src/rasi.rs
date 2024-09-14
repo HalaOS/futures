@@ -9,7 +9,7 @@ mod nslookup {
 
     use super::*;
 
-    use crate::nslookup::{DnsLookup, DnsLookupState};
+    use crate::nslookup::{DnsLookup, DnsLookupNetwork};
 
     impl DnsLookup {
         /// Create a DNS lookup with sys-wide DNS name server configuration.
@@ -31,7 +31,7 @@ mod nslookup {
 
             let this = Self::default();
 
-            let lookup = this.to_inner();
+            let lookup = this.to_network();
 
             let lookup_cloned = lookup.clone();
             let socket_cloned = socket.clone();
@@ -64,7 +64,7 @@ mod nslookup {
         }
 
         async fn udp_send_loop(
-            lookup: &DnsLookupState,
+            lookup: &DnsLookupNetwork,
             socket: &UdpSocket,
             server: SocketAddr,
         ) -> Result<()> {
@@ -78,7 +78,7 @@ mod nslookup {
         }
 
         async fn udp_recv_loop(
-            lookup: &DnsLookupState,
+            lookup: &DnsLookupNetwork,
             socket: &UdpSocket,
             server: SocketAddr,
         ) -> Result<()> {
@@ -105,15 +105,15 @@ mod nslookup {
 mod mdns {
     use std::{
         net::{IpAddr, Ipv4Addr, SocketAddr},
-        time::Duration,
+        time::{Duration, Instant},
     };
 
-    use rasi::{net::UdpSocket, task::spawn_ok, timer::TimeoutExt};
+    use rasi::{net::UdpSocket, task::spawn_ok, timer::sleep_until};
     use socket2::{Domain, Protocol, Type};
 
     use crate::{
         mdns::{
-            MdnsDiscover, MdnsDiscoverState, MULTICAST_ADDR_IPV4, MULTICAST_ADDR_IPV6,
+            MdnsDiscover, MdnsDiscoverNetwork, MULTICAST_ADDR_IPV4, MULTICAST_ADDR_IPV6,
             MULTICAST_PORT,
         },
         Result,
@@ -155,14 +155,39 @@ mod mdns {
 
             let this = Self::new(service_name, intervals)?;
 
-            spawn_ok(this.to_state().recv_loop(socket.clone()));
-            spawn_ok(this.to_state().send_loop(socket));
+            spawn_ok(this.to_network().timeout_loop(socket.clone()));
+            spawn_ok(this.to_network().recv_loop(socket.clone()));
+            spawn_ok(this.to_network().send_loop(socket));
 
             Ok(this)
         }
     }
 
-    impl MdnsDiscoverState {
+    impl MdnsDiscoverNetwork {
+        async fn timeout_loop(self, socket: UdpSocket) {
+            if let Err(err) = self.timeout_loop_prv().await {
+                log::error!("mdns_discover 'timeout_loop' stopped with error: {}", err);
+            }
+
+            self.close();
+            _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+
+        async fn timeout_loop_prv(&self) -> Result<()> {
+            while let Some(timeout_instant) = self.timeout_instant().await {
+                log::trace!(
+                    "timeout: {:?}",
+                    timeout_instant.duration_since(Instant::now())
+                );
+                sleep_until(timeout_instant).await;
+                self.on_timeout().await?;
+            }
+
+            log::trace!("timeout loop stpped");
+
+            Ok(())
+        }
+
         async fn recv_loop(self, socket: UdpSocket) {
             if let Err(err) = self.recv_loop_prv(&socket).await {
                 log::error!("mdns_discover 'recv_loop' stopped with error: {}", err);
@@ -202,18 +227,8 @@ mod mdns {
             };
 
             loop {
-                match self.send().await? {
-                    crate::mdns::MdnsDiscoverSend::Buf(buf) => {
-                        socket.send_to(buf, (raddr, MULTICAST_PORT)).await?;
-                    }
-                    crate::mdns::MdnsDiscoverSend::Sleep(duration) => {
-                        // closed
-                        if let Some(_) = self.is_closed().timeout(duration).await {
-                            log::trace!("");
-                            return Ok(());
-                        }
-                    }
-                }
+                let buf = self.send().await?;
+                socket.send_to(buf, (raddr, MULTICAST_PORT)).await?;
             }
         }
     }
@@ -254,7 +269,7 @@ mod tests {
 
             log::trace!("{:?}", group);
 
-            lookup.to_inner()
+            lookup.to_network()
         };
 
         sleep(Duration::from_secs(1)).await;
@@ -277,7 +292,7 @@ mod tests {
 
             log::trace!("{:?}", group);
 
-            lookup.to_inner()
+            lookup.to_network()
         };
 
         sleep(Duration::from_secs(1)).await;

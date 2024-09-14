@@ -11,8 +11,9 @@ use futures::{lock::Mutex, Stream};
 use futures_map::KeyWaitMap;
 use hickory_proto::{
     op::{Message, MessageType, Query},
-    rr::{Name, RecordType},
+    rr::{rdata::NULL, Name, Record, RecordData, RecordType},
 };
+use uuid::Uuid;
 
 use crate::{Error, Result};
 
@@ -27,18 +28,20 @@ pub const MULTICAST_PORT: u16 = 5353;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum MdnsDiscoverEvent {
-    Closed,
+    Send,
     Receive,
 }
 
 #[derive(Default)]
 struct RawMdnsDiscoverMutable {
     incoming: VecDeque<(Message, SocketAddr)>,
+    outgoing: VecDeque<Vec<u8>>,
     last_asking: Option<Instant>,
 }
 
 struct RawMdnsDiscover {
     is_closed: spin::Mutex<bool>,
+    id: Name,
     service_name: Name,
     intervals: Duration,
     mutable: Mutex<RawMdnsDiscoverMutable>,
@@ -48,6 +51,7 @@ struct RawMdnsDiscover {
 impl RawMdnsDiscover {
     fn new(service_name: &str, intervals: Duration) -> Result<Self> {
         Ok(Self {
+            id: Name::from_utf8(format!("{}.futures-dns.mdns", Uuid::new_v4()))?,
             is_closed: Default::default(),
             service_name: Name::from_utf8(service_name)?,
             intervals,
@@ -57,11 +61,11 @@ impl RawMdnsDiscover {
     }
 }
 
-/// The inner state of [`MdnsDiscover`]
+/// The network api of [`MdnsDiscover`]
 #[derive(Clone)]
-pub struct MdnsDiscoverState(Arc<RawMdnsDiscover>);
+pub struct MdnsDiscoverNetwork(Arc<RawMdnsDiscover>);
 
-impl MdnsDiscoverState {
+impl MdnsDiscoverNetwork {
     /// Create new discover instance with `service_name` and with asking `intervals`.
     fn new<S>(service_name: S, intervals: Duration) -> Result<Self>
     where
@@ -78,7 +82,7 @@ impl MdnsDiscoverState {
         *self.0.is_closed.lock() = true;
 
         self.0.event_map.batch_insert([
-            (MdnsDiscoverEvent::Closed, ()),
+            (MdnsDiscoverEvent::Send, ()),
             (MdnsDiscoverEvent::Receive, ()),
         ]);
     }
@@ -92,13 +96,72 @@ impl MdnsDiscoverState {
 
             self.0
                 .event_map
-                .wait(&MdnsDiscoverEvent::Closed, is_closed)
+                .wait(&MdnsDiscoverEvent::Send, is_closed)
                 .await;
         }
     }
 
+    /// Process generating a new query packet.
+    pub async fn on_timeout(&self) -> Result<()> {
+        if *self.0.is_closed.lock() {
+            return Err(Error::InvalidState);
+        }
+
+        let mut message = Message::new();
+
+        message
+            .set_id(rand::random())
+            .set_message_type(MessageType::Query)
+            .add_query(Query::query(self.0.service_name.clone(), RecordType::PTR));
+
+        self.multicast(message).await?;
+
+        self.0.mutable.lock().await.last_asking = Some(Instant::now());
+
+        Ok(())
+    }
+
+    /// Returns when the next timeout event will occur.
+    pub async fn timeout_instant(&self) -> Option<Instant> {
+        if *self.0.is_closed.lock() {
+            return None;
+        }
+
+        let mutable = self.0.mutable.lock().await;
+
+        if let Some(last_asking) = mutable.last_asking {
+            Some(last_asking + self.0.intervals)
+        } else {
+            Some(Instant::now())
+        }
+    }
+
+    /// Multicast provides DNS `message`.
+    pub async fn multicast(&self, mut message: Message) -> Result<()> {
+        if *self.0.is_closed.lock() {
+            return Err(Error::InvalidState);
+        }
+
+        message.add_additional(Record::from_rdata(
+            self.0.id.clone(),
+            0,
+            NULL::new().into_rdata(),
+        ));
+
+        self.0
+            .mutable
+            .lock()
+            .await
+            .outgoing
+            .push_back(message.to_vec()?);
+
+        self.0.event_map.insert(MdnsDiscoverEvent::Send, ());
+
+        Ok(())
+    }
+
     /// Writes a single DNS packet to be multicast.
-    pub async fn send(&self) -> Result<MdnsDiscoverSend> {
+    pub async fn send(&self) -> Result<Vec<u8>> {
         loop {
             if *self.0.is_closed.lock() {
                 return Err(Error::InvalidState);
@@ -106,33 +169,14 @@ impl MdnsDiscoverState {
 
             let mut mutable = self.0.mutable.lock().await;
 
-            let sleep = if let Some(last_asking) = mutable.last_asking {
-                let elapsed = last_asking.elapsed();
-                if elapsed > self.0.intervals {
-                    mutable.last_asking = Some(Instant::now());
-                    None
-                } else {
-                    Some(self.0.intervals - elapsed)
-                }
-            } else {
-                mutable.last_asking = Some(Instant::now());
-                None
-            };
-
-            if let Some(sleep) = sleep {
-                return Ok(MdnsDiscoverSend::Sleep(sleep));
-            } else {
-                let mut message = Message::new();
-
-                message
-                    .set_id(rand::random())
-                    .set_message_type(MessageType::Query)
-                    .add_query(Query::query(self.0.service_name.clone(), RecordType::PTR));
-
-                log::trace!("send request: {:?}", message);
-
-                return Ok(MdnsDiscoverSend::Buf(message.to_vec()?));
+            if let Some(message) = mutable.outgoing.pop_front() {
+                return Ok(message);
             }
+
+            self.0
+                .event_map
+                .wait(&MdnsDiscoverEvent::Send, mutable)
+                .await;
         }
     }
 
@@ -143,8 +187,12 @@ impl MdnsDiscoverState {
     {
         let message = Message::from_vec(buf.as_ref())?;
 
-        if MessageType::Response != message.message_type() {
-            log::warn!("skip request: {:?}", message);
+        if message
+            .additionals()
+            .iter()
+            .any(|record| record.name().eq(&self.0.id))
+        {
+            log::warn!("skip packet that sent by self: {}", from);
             return Ok(());
         }
 
@@ -176,7 +224,7 @@ pub enum MdnsDiscoverSend {
 }
 
 /// Utilities for discovering devices on the LAN
-pub struct MdnsDiscover(MdnsDiscoverState);
+pub struct MdnsDiscover(MdnsDiscoverNetwork);
 
 impl Drop for MdnsDiscover {
     fn drop(&mut self) {
@@ -190,11 +238,11 @@ impl MdnsDiscover {
     where
         S: AsRef<str>,
     {
-        Ok(Self(MdnsDiscoverState::new(service_name, intervals)?))
+        Ok(Self(MdnsDiscoverNetwork::new(service_name, intervals)?))
     }
 
-    /// Returns an inner [`MdnsDiscoverState`] instance.
-    pub fn to_state(&self) -> MdnsDiscoverState {
+    /// Returns an inner [`MdnsDiscoverNetwork`] instance.
+    pub fn to_network(&self) -> MdnsDiscoverNetwork {
         self.0.clone()
     }
 

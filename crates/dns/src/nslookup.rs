@@ -43,9 +43,9 @@ pub(crate) struct RawDnsLookup {
 ///
 /// Usually this type is used by background io tasks, the end-users should use [`DnsLookup`] instead.
 #[derive(Default, Clone)]
-pub struct DnsLookupState(pub(crate) Arc<RawDnsLookup>);
+pub struct DnsLookupNetwork(pub(crate) Arc<RawDnsLookup>);
 
-impl DnsLookupState {
+impl DnsLookupNetwork {
     /// Returns true if this client is closed.
     pub fn is_closed(&self) -> bool {
         self.0.is_closed.load(Ordering::SeqCst)
@@ -106,7 +106,7 @@ impl DnsLookupState {
 
 /// A asynchronous DNs client.
 #[derive(Default)]
-pub struct DnsLookup(DnsLookupState);
+pub struct DnsLookup(DnsLookupNetwork);
 
 impl Drop for DnsLookup {
     fn drop(&mut self) {
@@ -164,7 +164,7 @@ impl DnsLookup {
 
 impl DnsLookup {
     /// Get the innner [`DnsLookupState`] instance.
-    pub fn to_inner(&self) -> DnsLookupState {
+    pub fn to_network(&self) -> DnsLookupNetwork {
         self.0.clone()
     }
     /// Lookup ipv6 records.

@@ -17,6 +17,7 @@ hickory-proto = { workspace = true, optional = true, features = ["mdns"] }
 socket2 = { workspace = true, optional = true, features = ["all"] }
 rand = { workspace = true, optional = true }
 spin = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 resolv-conf = { workspace = true, optional = true }
@@ -29,11 +30,10 @@ futures-test = { workspace = true }
 rasi = { workspace = true, features = ["task-futures"] }
 rasi-mio = { workspace = true }
 pretty_env_logger = { workspace = true }
-uuid = { workspace = true }
 
 [features]
 default = ["rasi", "nslookup", "sysconf", "mdns"]
 rasi = ["dep:rasi", "sysconf", "socket2"]
 nslookup = ["hickory-proto"]
 sysconf = ["resolv-conf", "ipconfig"]
-mdns = ["rand", "spin"]
+mdns = ["rand", "spin", "uuid"]
