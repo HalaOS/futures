@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org).
 Note: In this file, do not use the hard wrap in the middle of a sentence for compatibility with GitHub comment style markdown rendering.
 -->
 
+## [0.2.8] - 2024-09-14
+
+- yamux: fixed RST handle bug.
+
 ## [0.2.7] - 2024-09-14
 
 - mdns: fixed windows compile bug.
