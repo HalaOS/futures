@@ -512,12 +512,14 @@ impl Session {
         let (frame, read_size) = Frame::parse(buf)?;
 
         let frame_type = frame.header.frame_type()?;
+        let flags = frame.header.flags()?;
 
         log::trace!(
-            "recv frame, type={:?}, stream={}, len={}",
+            "recv frame, type={:?}, id={}, flags={:?}, len={}",
             frame_type,
             frame.header.stream_id(),
-            frame.header.length()
+            flags,
+            frame.header.length(),
         );
 
         match frame_type {
@@ -554,14 +556,6 @@ impl Session {
 
                 self.streams.insert(stream_id, stream);
                 self.incoming_stream_ids.push_back(stream_id);
-            } else {
-                if !flags.contains(Flags::RST) {
-                    // terminate the session.
-                    self.send_frames
-                        .push_back(SendFrame::GoAway(Reason::ProtocolError));
-                    // terminate recv loop
-                    return Err(Error::InvalidState);
-                }
             }
         }
 
@@ -589,14 +583,6 @@ impl Session {
 
                 self.streams.insert(stream_id, stream);
                 self.incoming_stream_ids.push_back(stream_id);
-            } else {
-                if !flags.contains(Flags::RST) {
-                    // terminate the session.
-                    self.send_frames
-                        .push_back(SendFrame::GoAway(Reason::ProtocolError));
-                    // terminate recv loop
-                    return Err(Error::InvalidState);
-                }
             }
         }
 
