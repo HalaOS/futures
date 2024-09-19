@@ -847,7 +847,12 @@ impl Session {
 
         let stream_id = self.next_outbound_stream_id;
 
-        self.next_outbound_stream_id += 2;
+        // may overflow.
+        if let Some(next_outbound_stream_id) = self.next_outbound_stream_id.checked_add(2) {
+            self.next_outbound_stream_id += next_outbound_stream_id;
+        } else {
+            return Err(Error::InvalidState);
+        }
 
         let stream = Stream::new(stream_id, self.window_size, false);
 
